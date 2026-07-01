@@ -240,6 +240,80 @@ class Updater:
         text = "".join(diff)
         return text or f"(no textual difference for {relpath})"
 
+    def review_change(self, plan: UpdatePlan, relpath: str) -> list[tuple[str, str]]:
+        """Rich, origin-tagged review of a file change for colored rendering.
+
+        Returns ``[(tag, line), ...]``. When a merge base exists, this is a
+        three-way projection so a viewer can distinguish what the *update*
+        changed from what the *user* changed locally:
+
+          same, update_add, update_del, local_add, local_del,
+          conflict_marker, conflict_local, conflict_base, conflict_remote
+
+        Without a base it falls back to a two-way diff tagged with update_add /
+        update_del / hunk / header / same. Binary or no-diff yields a single
+        ``("info", ...)`` entry.
+        """
+        import difflib
+
+        op = next((o for o in plan._ops if o.relpath == relpath), None)
+        if op is None:
+            return [("info", f"(no change for {relpath})")]
+
+        def _read(path: Path | None) -> str | None:
+            if path is None or not path.exists():
+                return ""
+            if not is_text_file(path):
+                return None
+            return path.read_text(encoding="utf-8", errors="replace")
+
+        install_path = self.config.install_root / relpath
+        sub = plan._subscription
+
+        local_text = _read(install_path)
+
+        # "remote" must be the PRISTINE upstream file (the raw download), not the
+        # merged op result — otherwise a merged file's local edits would appear on
+        # the upstream side too and be mis-attributed. The pristine copy lives in
+        # the payload root; fall back to op.src, and "" for a delete.
+        payload_root = getattr(plan, "_payload_root", None)
+        remote_path = (payload_root / relpath) if payload_root else op.src
+        remote_text = "" if op.kind == "delete" else _read(remote_path)
+
+        base_text = None
+        if sub is not None:
+            base_text = self.state.read_base_file(sub.repo, plan.branch, relpath)
+
+        if local_text is None or remote_text is None:
+            return [("info", f"(binary file - no text review for {relpath})")]
+
+        # Three-way when we have the common ancestor and an incoming version.
+        if base_text is not None:
+            from .merge import annotate_three_way_text
+            tagged = annotate_three_way_text(base_text, local_text, remote_text)
+            if tagged:
+                return tagged
+
+        # Two-way fallback (e.g. no baseline yet): tag everything as update-origin.
+        new = remote_text
+        old = local_text or ""
+        tagged = []
+        for line in difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True),
+            fromfile=f"current/{relpath}", tofile=f"updated/{relpath}",
+        ):
+            if line.startswith(("+++", "---")):
+                tagged.append(("header", line))
+            elif line.startswith("@@"):
+                tagged.append(("hunk", line))
+            elif line.startswith("+"):
+                tagged.append(("update_add", line[1:]))
+            elif line.startswith("-"):
+                tagged.append(("update_del", line[1:]))
+            else:
+                tagged.append(("same", line[1:] if line[:1] == " " else line))
+        return tagged or [("info", f"(no textual difference for {relpath})")]
+
     # -- rollback / snapshots ---------------------------------------------
     def list_snapshots(self, repo: str, branch: str) -> list[dict]:
         """Rollback points for repo/branch, newest first (full traceback history)."""

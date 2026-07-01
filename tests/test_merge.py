@@ -38,3 +38,46 @@ def test_added_lines_both_sides():
     res = merge_text(base, local, remote)
     assert res.clean
     assert "remote-head" in res.text and "local-tail" in res.text
+
+
+# ── annotate_three_way (origin-tagged review projection) ────────────────────
+from gitplucker.merge import annotate_three_way_text
+
+
+def _tags(tagged):
+    return [t for t, _ in tagged]
+
+
+def test_annotate_update_only_change():
+    base = "a\nb\nc\n"
+    local = "a\nb\nc\n"        # user untouched
+    remote = "a\nb\nc\nd\n"    # update appended a line
+    tagged = annotate_three_way_text(base, local, remote)
+    tags = _tags(tagged)
+    assert "update_add" in tags
+    assert "local_add" not in tags and "local_del" not in tags
+    assert ("update_add", "d\n") in tagged
+
+
+def test_annotate_local_only_change():
+    base = "a\nb\nc\n"
+    local = "a\nB\nc\n"        # user edited line 2
+    remote = "a\nb\nc\n"       # update untouched
+    tagged = annotate_three_way_text(base, local, remote)
+    tags = _tags(tagged)
+    assert "local_add" in tags and "local_del" in tags
+    assert "update_add" not in tags
+    assert ("local_add", "B\n") in tagged
+    assert ("local_del", "b\n") in tagged
+
+
+def test_annotate_both_sides_conflict_blocks():
+    base = "a\nb\nc\n"
+    local = "a\nLOCAL\nc\n"
+    remote = "a\nREMOTE\nc\n"
+    tagged = annotate_three_way_text(base, local, remote)
+    tags = _tags(tagged)
+    assert "conflict_marker" in tags
+    assert ("conflict_local", "LOCAL\n") in tagged
+    assert ("conflict_remote", "REMOTE\n") in tagged
+    assert ("conflict_base", "b\n") in tagged

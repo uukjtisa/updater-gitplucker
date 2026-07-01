@@ -24,7 +24,12 @@ from .errors import (
     RepoNotAllowedError,
     SourceError,
 )
-from .merge import MergeResult, merge_text
+from .merge import (
+    MergeResult,
+    annotate_three_way,
+    annotate_three_way_text,
+    merge_text,
+)
 from .models import (
     ApplyResult,
     Channel,
@@ -36,7 +41,7 @@ from .models import (
 from .triggers import BackgroundTrigger, ManualTrigger, StartupTrigger
 from .updater import Updater
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
     "Updater",
@@ -55,6 +60,8 @@ __all__ = [
     "BackgroundTrigger",
     "merge_text",
     "MergeResult",
+    "annotate_three_way",
+    "annotate_three_way_text",
     "GitpluckerError",
     "ConfigError",
     "RepoNotAllowedError",

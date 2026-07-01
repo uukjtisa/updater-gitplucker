@@ -100,3 +100,62 @@ def merge_text(
         local_label,
         remote_label,
     )
+
+
+# Origin tags produced by annotate_three_way / annotate_three_way_text.
+# same, update_add, update_del, local_add, local_del,
+# conflict_marker, conflict_local, conflict_base, conflict_remote
+def annotate_three_way(base: list[str], local: list[str], remote: list[str]):
+    """Tag every line of a 3-way merge by where the change came from.
+
+    Returns a list of ``(tag, line)`` pairs so a viewer can colour each origin:
+    lines the update added/removed (relative to the common ancestor) vs lines the
+    user changed locally, plus conflict regions where both sides touched the same
+    lines. This is a *review* projection over the base, not the merged file.
+    """
+    la = _index_map(base, local)
+    lb = _index_map(base, remote)
+    sync = sorted(i for i in la if i in lb)
+
+    out: list[tuple[str, str]] = []
+    a = b = c = 0
+
+    def region(base_reg, local_reg, remote_reg):
+        local_changed = local_reg != base_reg
+        remote_changed = remote_reg != base_reg
+        if not local_changed and not remote_changed:
+            out.extend(("same", ln) for ln in base_reg)
+        elif local_changed and not remote_changed:
+            out.extend(("local_del", ln) for ln in base_reg)
+            out.extend(("local_add", ln) for ln in local_reg)
+        elif remote_changed and not local_changed:
+            out.extend(("update_del", ln) for ln in base_reg)
+            out.extend(("update_add", ln) for ln in remote_reg)
+        elif local_reg == remote_reg:
+            # both made the identical change -> show as the update's result
+            out.extend(("update_del", ln) for ln in base_reg)
+            out.extend(("update_add", ln) for ln in local_reg)
+        else:
+            out.append(("conflict_marker", "<<<<<<< local\n"))
+            out.extend(("conflict_local", ln) for ln in local_reg)
+            out.append(("conflict_marker", "||||||| base\n"))
+            out.extend(("conflict_base", ln) for ln in base_reg)
+            out.append(("conflict_marker", "=======\n"))
+            out.extend(("conflict_remote", ln) for ln in remote_reg)
+            out.append(("conflict_marker", ">>>>>>> update\n"))
+
+    for bi in sync:
+        li, ri = la[bi], lb[bi]
+        region(base[a:bi], local[b:li], remote[c:ri])
+        out.append(("same", base[bi]))
+        a, b, c = bi + 1, li + 1, ri + 1
+    region(base[a:], local[b:], remote[c:])
+    return out
+
+
+def annotate_three_way_text(base_text: str, local_text: str, remote_text: str):
+    return annotate_three_way(
+        base_text.splitlines(keepends=True),
+        local_text.splitlines(keepends=True),
+        remote_text.splitlines(keepends=True),
+    )
