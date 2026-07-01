@@ -19,3 +19,7 @@ env/
 .mypy_cache/
 .ruff_cache/
 *.log
+
+# Local project context for Claude Code — contains secrets (PyPI token). NEVER commit.
+CLAUDE.md
+.claude/

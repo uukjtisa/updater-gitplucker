@@ -36,7 +36,7 @@ from .models import (
 from .triggers import BackgroundTrigger, ManualTrigger, StartupTrigger
 from .updater import Updater
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Updater",

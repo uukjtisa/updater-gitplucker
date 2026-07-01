@@ -24,7 +24,7 @@ from .config import RepoSubscription, UpdaterConfig
 from .deps import install_requirements, resolve_dependencies, scan_imports
 from .errors import RepoNotAllowedError
 from .events import EventEmitter
-from .fsutil import list_files
+from .fsutil import is_text_file, list_files
 from .models import Channel, ChangeType, UpdatePlan, ApplyResult
 from .planner import build_file_plan
 from .sources import ReleaseSource, SourceZipSource
@@ -134,36 +134,58 @@ class Updater:
         return bool(target) and is_newer(target, current)
 
     # -- public: applying -------------------------------------------------
-    def apply(self, plan: UpdatePlan) -> ApplyResult:
+    def apply(self, plan: UpdatePlan, only=None) -> ApplyResult:
+        """Apply a checked plan.
+
+        ``only`` — optional iterable of relative paths (a subset of
+        ``plan.changed_paths``) to restrict the update to just those files. When
+        given, unselected file changes are skipped, deletions of unselected
+        files are skipped, and dependencies are only installed if the file that
+        introduced them was selected. ``None`` applies everything.
+        """
         if not plan.has_update:
             self.discard(plan)
             return ApplyResult(plan.repo, plan.branch, success=True,
                                message="already up to date")
+
+        plan._selected = set(only) if only is not None else None
+        partial = plan._selected is not None
 
         sub: RepoSubscription = plan._subscription  # type: ignore[assignment]
         strategy = get_strategy(self.config.apply_strategy)
         result = strategy.apply(self.config, plan, self.events, self.state)
 
         # Install dependencies (python-source only), after files are in place.
+        # On a partial apply, only install deps whose introducing file was chosen.
         if (result.success and sub.channel is Channel.PYTHON_SOURCE
                 and self.config.auto_install_deps and plan.dependency_changes):
-            reqs = [d.requirement for d in plan.dependency_changes]
-            ok, out = install_requirements(reqs)
-            for r in reqs:
-                self.events.emit(ev.DEP_INSTALL, requirement=r, ok=ok)
-            result.installed_deps.extend(reqs)
-            if not ok:
-                result.message += f"\n[deps] pip reported errors:\n{out[-1000:]}"
+            deps = plan.dependency_changes
+            if partial:
+                deps = [d for d in deps
+                        if not d.source_file or d.source_file in plan._selected]
+            reqs = [d.requirement for d in deps]
+            if reqs:
+                ok, out = install_requirements(reqs)
+                for r in reqs:
+                    self.events.emit(ev.DEP_INSTALL, requirement=r, ok=ok)
+                result.installed_deps.extend(reqs)
+                if not ok:
+                    result.message += f"\n[deps] pip reported errors:\n{out[-1000:]}"
 
         # Record the new baseline so the next merge has a common ancestor.
-        if result.success and not plan._is_package and plan._payload_root:
+        # A partial apply must NOT overwrite the whole baseline (unselected files
+        # weren't updated), so the version/base snapshot is only advanced on a
+        # full apply. Partial applies stay on the previous baseline version.
+        if result.success and not partial and not plan._is_package and plan._payload_root:
             payload_files = list_files(plan._payload_root, sub.include_globs, sub.exclude_globs)
             self.state.snapshot_base(sub.repo, plan.branch, plan._payload_root, payload_files)
             self.state.set_known_modules(
                 sub.repo, plan.branch, set(scan_imports(plan._payload_root).keys())
             )
-        if result.success and plan.target_version:
+        if result.success and not partial and plan.target_version:
             self.state.set_version(sub.repo, plan.branch, plan.target_version)
+        if partial:
+            result.message += "  (partial update — version marker unchanged)"
 
         self.events.emit(ev.APPLY_DONE, repo=plan.repo, branch=plan.branch, success=result.success)
         self.discard(plan)
@@ -173,6 +195,50 @@ class Updater:
         """Install a plan's detected dependencies without touching files."""
         reqs = [d.requirement for d in plan.dependency_changes]
         return install_requirements(reqs)
+
+    def preview_change(self, plan: UpdatePlan, relpath: str, context: int = 3) -> str:
+        """Return a unified diff of what applying ``relpath`` would do.
+
+        Lets a host show the exact change for review before selecting a file.
+        Returns a human-readable note for binary files or when there's nothing
+        to preview.
+        """
+        import difflib
+
+        op = next((o for o in plan._ops if o.relpath == relpath), None)
+        if op is None:
+            return f"(no change for {relpath})"
+
+        install_path = self.config.install_root / relpath
+
+        def _read(path: Path) -> str | None:
+            if not path.exists():
+                return ""
+            if not is_text_file(path):
+                return None
+            return path.read_text(encoding="utf-8", errors="replace")
+
+        old = _read(install_path)
+        if op.kind == "delete":
+            new = ""
+        elif op.kind == "write":
+            new = op.text or ""
+        else:  # copy
+            src = op.src
+            if src is None or (src.exists() and not is_text_file(src)):
+                new = None
+            else:
+                new = src.read_text(encoding="utf-8", errors="replace") if src.exists() else ""
+
+        if old is None or new is None:
+            return f"(binary file — {op.kind}; no text diff for {relpath})"
+
+        diff = difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True),
+            fromfile=f"current/{relpath}", tofile=f"updated/{relpath}", n=context,
+        )
+        text = "".join(diff)
+        return text or f"(no textual difference for {relpath})"
 
     # -- housekeeping -----------------------------------------------------
     def discard(self, plan: UpdatePlan) -> None:

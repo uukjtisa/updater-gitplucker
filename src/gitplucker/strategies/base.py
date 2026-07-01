@@ -45,6 +45,10 @@ def _execute_ops(
 ) -> ApplyResult:
     result = ApplyResult(repo=plan.repo, branch=plan.branch)
     root = cfg.install_root
+
+    # Honor a user's file selection (None = apply everything).
+    if plan._selected is not None:
+        ops = [op for op in ops if op.relpath in plan._selected]
     backup_dir: Path | None = None
     if cfg.backup:
         backup_dir = state.new_backup_dir(plan.repo, plan.branch)

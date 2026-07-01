@@ -190,6 +190,7 @@ def resolve_dependencies(
                 spec=spec,
                 is_new=module not in known,
                 reason=f"imported in {first_file}",
+                source_file=first_file,
             )
         )
     return changes

@@ -51,6 +51,7 @@ class DependencyChange:
     spec: str = ""              # optional version spec, e.g. "==2.1.0"
     is_new: bool = True         # newly referenced vs. previous version
     reason: str = ""            # e.g. "imported in systema/core/net.py"
+    source_file: str = ""       # payload-relative path the import was first seen in
 
     @property
     def requirement(self) -> str:
@@ -79,6 +80,7 @@ class UpdatePlan:
     _payload_root: Path | None = None
     _base_root: Path | None = None
     _ops: list = field(default_factory=list)          # list[planner.FileOp]
+    _selected: set | None = None                      # None = all; else only these relpaths
     _package_path: Path | None = None                 # RELEASE wheel/sdist, if any
     _is_package: bool = False
     _workdir: Path | None = None                      # temp dir to clean after apply
@@ -91,6 +93,11 @@ class UpdatePlan:
     @property
     def new_dependencies(self) -> list[DependencyChange]:
         return [d for d in self.dependency_changes if d.is_new]
+
+    @property
+    def changed_paths(self) -> list[str]:
+        """Relative paths that an apply would actually write/delete (selectable)."""
+        return [op.relpath for op in self._ops]
 
     def summary(self) -> str:
         added = sum(1 for f in self.file_changes if f.change is ChangeType.ADDED)
