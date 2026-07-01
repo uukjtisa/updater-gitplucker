@@ -9,7 +9,7 @@ description = "Modular, pluggable GitHub updater library for Python-glued projec
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Niccc2007", email = "" }]
+authors = [{ name = "Niccc2007" }]
 keywords = ["updater", "github", "auto-update", "self-update", "merge", "dependencies"]
 classifiers = [
     "Development Status :: 4 - Beta",
