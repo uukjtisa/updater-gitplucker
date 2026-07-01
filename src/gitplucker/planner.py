@@ -51,17 +51,22 @@ def build_file_plan(
         remote_path = payload_root / rel
         install_path = install_root / rel
         remote_hash = sha256_file(remote_path)
+        remote_is_text = is_text_file(remote_path)
 
         if not install_path.exists():
-            changes.append(FileChange(rel, ChangeType.ADDED, remote_hash=remote_hash))
+            changes.append(FileChange(rel, ChangeType.ADDED, remote_hash=remote_hash,
+                                      is_text=remote_is_text))
             ops.append(FileOp(rel, "copy", src=remote_path))
             continue
 
         local_hash = sha256_file(install_path)
         if local_hash == remote_hash:
             changes.append(FileChange(rel, ChangeType.UNCHANGED,
-                                      remote_hash=remote_hash, local_hash=local_hash))
+                                      remote_hash=remote_hash, local_hash=local_hash,
+                                      is_text=remote_is_text))
             continue
+
+        change_is_text = remote_is_text and is_text_file(install_path)
 
         base_text = state.read_base_file(sub.repo, branch, rel)
         locally_modified = False
@@ -86,12 +91,12 @@ def build_file_plan(
             if res.clean:
                 changes.append(FileChange(rel, ChangeType.MERGED, remote_hash=remote_hash,
                                           local_hash=local_hash, locally_modified=True,
-                                          note="local edits preserved"))
+                                          note="local edits preserved", is_text=True))
                 ops.append(FileOp(rel, "write", text=res.text))
             else:
                 fc = FileChange(rel, ChangeType.CONFLICT, remote_hash=remote_hash,
                                 local_hash=local_hash, locally_modified=True,
-                                conflict_lines=res.conflict_lines)
+                                conflict_lines=res.conflict_lines, is_text=True)
                 if cfg.conflict_policy == ConflictPolicy.ABORT:
                     raise MergeConflictError(f"conflict in {rel} ({res.conflicts} hunks)")
                 elif cfg.conflict_policy == ConflictPolicy.LOCAL:
@@ -111,7 +116,7 @@ def build_file_plan(
                 warnings.append(f"{rel}: {note}")
             changes.append(FileChange(rel, ChangeType.MODIFIED, remote_hash=remote_hash,
                                       local_hash=local_hash, locally_modified=locally_modified,
-                                      note=note))
+                                      note=note, is_text=change_is_text))
             ops.append(FileOp(rel, "copy", src=remote_path))
 
     # Deletions: files that came from the repo before but are gone upstream now.
@@ -127,7 +132,8 @@ def build_file_plan(
             # Only remove if the user hasn't diverged from the tracked version.
             base_hash = sha256_file(base_root / rel)
             if sha256_file(install_path) == base_hash:
-                changes.append(FileChange(rel, ChangeType.DELETED, local_hash=base_hash))
+                changes.append(FileChange(rel, ChangeType.DELETED, local_hash=base_hash,
+                                          is_text=is_text_file(install_path)))
                 ops.append(FileOp(rel, "delete"))
             else:
                 warnings.append(f"{rel}: removed upstream but modified locally; kept")

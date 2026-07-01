@@ -240,6 +240,86 @@ class Updater:
         text = "".join(diff)
         return text or f"(no textual difference for {relpath})"
 
+    # -- rollback / snapshots ---------------------------------------------
+    def list_snapshots(self, repo: str, branch: str) -> list[dict]:
+        """Rollback points for repo/branch, newest first (full traceback history)."""
+        if not self.config.is_allowed(repo):
+            return []
+        out: list[dict] = []
+        for d in self.state.list_backups(repo, branch):
+            m = self.state.read_manifest(d)
+            if not m:
+                continue
+            out.append({
+                "path": d,
+                "created": m.get("created"),
+                "version_before": m.get("version_before"),
+                "version_after": m.get("version_after"),
+                "partial": m.get("partial", False),
+                "files": len(m.get("entries", [])),
+            })
+        return out
+
+    def rollback(self, repo: str, branch: str, snapshot=None) -> ApplyResult:
+        """Revert the latest (or a given) applied update from its snapshot.
+
+        Restores overwritten/deleted files from the backup and removes files the
+        update newly added, then rewinds the stored version marker. The snapshot
+        itself is kept (history is never pruned) so you can still trace back.
+        """
+        if not self.config.is_allowed(repo):
+            raise RepoNotAllowedError(f"repo {repo!r} is not allowlisted")
+        snaps = self.state.list_backups(repo, branch)
+        if not snaps:
+            return ApplyResult(repo, branch, success=False, message="no snapshot to revert")
+        backup_dir = Path(snapshot) if snapshot else snaps[0]
+        manifest = self.state.read_manifest(backup_dir)
+        if not manifest:
+            return ApplyResult(repo, branch, success=False,
+                               message=f"snapshot manifest missing in {backup_dir}")
+
+        root = self.config.install_root
+        files_root = backup_dir / "files"
+        restored: list[str] = []
+        errors: list[str] = []
+        for entry in manifest.get("entries", []):
+            rel = entry["relpath"]
+            target = root / rel
+            try:
+                if entry.get("existed_before"):
+                    src = files_root / rel
+                    if src.exists():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, target)
+                        restored.append(rel)
+                else:
+                    if target.exists():           # update added it -> remove it
+                        target.unlink()
+                        restored.append(rel)
+            except OSError as e:
+                errors.append(f"{rel}: {e}")
+
+        version_before = manifest.get("version_before")
+        self.state.set_version(repo, branch, version_before)
+        # The merge base now reflects a version we just rewound past; drop it so
+        # the next check re-establishes a clean baseline instead of mis-merging.
+        try:
+            base = self.state.base_dir(repo, branch)
+            if base.exists():
+                shutil.rmtree(base, ignore_errors=True)
+        except OSError:
+            pass
+
+        self.events.emit(ev.ROLLBACK, path=str(backup_dir))
+        result = ApplyResult(
+            repo, branch, success=not errors, backup_path=backup_dir,
+            message=f"reverted {len(restored)} file(s) to "
+                    f"{version_before or 'the pre-update state'}",
+        )
+        if errors:
+            result.message += f"; {len(errors)} error(s): " + "; ".join(errors[:5])
+        return result
+
     # -- housekeeping -----------------------------------------------------
     def discard(self, plan: UpdatePlan) -> None:
         """Delete the temp download backing a plan. Safe to call twice."""

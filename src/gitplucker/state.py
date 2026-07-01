@@ -83,9 +83,32 @@ class StateStore:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
 
-    # -- backups ----------------------------------------------------------
+    # -- backups / rollback snapshots -------------------------------------
     def new_backup_dir(self, repo: str, branch: str) -> Path:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         d = self.dir / "backups" / _slug(repo) / f"{branch}-{stamp}"
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def write_manifest(self, backup_dir: Path, data: dict) -> None:
+        """Store the rollback manifest for a snapshot (what to restore/delete)."""
+        (Path(backup_dir) / "manifest.json").write_text(
+            json.dumps(data, indent=2), encoding="utf-8")
+
+    def read_manifest(self, backup_dir: Path) -> dict | None:
+        p = Path(backup_dir) / "manifest.json"
+        if not p.exists():
+            return None
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def list_backups(self, repo: str, branch: str) -> list[Path]:
+        """All snapshot dirs for repo/branch, newest first (full traceback history)."""
+        base = self.dir / "backups" / _slug(repo)
+        if not base.exists():
+            return []
+        dirs = [d for d in base.iterdir()
+                if d.is_dir() and d.name.startswith(f"{branch}-")]
+        return sorted(dirs, key=lambda d: d.name, reverse=True)

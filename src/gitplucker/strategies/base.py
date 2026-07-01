@@ -56,13 +56,14 @@ def _execute_ops(
         emitter.emit(ev.BACKUP, path=str(backup_dir))
 
     touched: list[tuple[Path, Path | None]] = []  # (target, backup_copy or None if new)
+    manifest_entries: list[dict] = []             # for post-apply rollback
 
     def stage_backup(target: Path) -> None:
         if not cfg.backup or backup_dir is None:
             return
         if target.exists():
             rel = target.relative_to(root)
-            bpath = backup_dir / rel
+            bpath = backup_dir / "files" / rel
             bpath.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, bpath)
             touched.append((target, bpath))
@@ -72,6 +73,7 @@ def _execute_ops(
     try:
         for op in ops:
             target = root / op.relpath
+            existed_before = target.exists()
             if op.kind == "delete":
                 if not allow_delete:
                     continue
@@ -90,6 +92,10 @@ def _execute_ops(
                 target.write_text(op.text or "", encoding="utf-8")
                 emitter.emit(ev.APPLY_FILE, path=op.relpath, change="write")
             result.applied_files.append(op.relpath)
+            manifest_entries.append({
+                "relpath": op.relpath, "kind": op.kind,
+                "existed_before": existed_before,
+            })
     except Exception as e:
         _rollback(root, touched, emitter)
         result.rolled_back = True
@@ -98,10 +104,26 @@ def _execute_ops(
         emitter.emit(ev.ROLLBACK, path=str(backup_dir) if backup_dir else "")
         raise ApplyError(result.message) from e
 
+    # Persist a rollback manifest so the user can revert this update later.
+    if cfg.backup and backup_dir is not None and manifest_entries:
+        state.write_manifest(backup_dir, {
+            "repo": plan.repo, "branch": plan.branch,
+            "version_before": plan.current_version,
+            "version_after": plan.target_version,
+            "created": _now(),
+            "partial": plan._selected is not None,
+            "entries": manifest_entries,
+        })
+
     result.conflicts = [c.path for c in plan.conflicts]
     result.success = True
     result.message = f"applied {len(result.applied_files)} file operation(s)"
     return result
+
+
+def _now() -> str:
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _rollback(root: Path, touched: list[tuple[Path, Path | None]], emitter: EventEmitter) -> None:

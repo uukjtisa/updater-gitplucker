@@ -40,6 +40,7 @@ class FileChange:
     locally_modified: bool = False  # differs from the last applied base
     conflict_lines: int = 0
     note: str = ""
+    is_text: bool = True            # False for binary files (no reviewable text diff)
 
 
 @dataclass
