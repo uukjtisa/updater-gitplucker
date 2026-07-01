@@ -103,6 +103,47 @@ class GitHubClient:
         )
         return sha, date
 
+    def list_commits(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
+        """Recent commits on ``branch``, newest first.
+
+        Each item: ``{sha, message, date, author}``. Best-effort — returns []
+        on any API error so callers can degrade gracefully.
+        """
+        self._guard(repo)
+        try:
+            data = self._get_json(
+                f"{self._api}/repos/{repo}/commits?sha={branch}&per_page={int(limit)}")
+        except GitHubAPIError:
+            return []
+        return [self._commit_row(c) for c in (data if isinstance(data, list) else [])]
+
+    def compare_commits(self, repo: str, base: str, head: str, limit: int = 50) -> list[dict]:
+        """Commits in ``base..head`` (what an update would bring), newest first.
+
+        This is the "stacked commits" list — everything between the installed
+        revision and the branch tip. Best-effort; returns [] on error.
+        """
+        self._guard(repo)
+        try:
+            data = self._get_json(f"{self._api}/repos/{repo}/compare/{base}...{head}")
+        except GitHubAPIError:
+            return []
+        commits = data.get("commits", []) if isinstance(data, dict) else []
+        rows = [self._commit_row(c) for c in commits]
+        return list(reversed(rows))[:int(limit)]   # API returns oldest-first
+
+    @staticmethod
+    def _commit_row(c: dict) -> dict:
+        commit = c.get("commit", {}) or {}
+        author = commit.get("author", {}) or {}
+        committer = commit.get("committer", {}) or {}
+        return {
+            "sha": c.get("sha", ""),
+            "message": (commit.get("message", "") or "").strip(),
+            "date": committer.get("date", "") or author.get("date", ""),
+            "author": author.get("name", "") or (c.get("author", {}) or {}).get("login", ""),
+        }
+
     def download(self, repo: str, url: str, dest: Path, progress: ProgressCb | None = None) -> Path:
         """Download a URL (asset or zipball) to ``dest``, enforcing the allowlist."""
         self._guard(repo)

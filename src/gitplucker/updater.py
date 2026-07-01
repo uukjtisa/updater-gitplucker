@@ -133,6 +133,29 @@ class Updater:
             return False
         return bool(target) and is_newer(target, current)
 
+    def pending_commits(self, repo: str, branch: str = "main", limit: int = 50) -> list[dict]:
+        """Commit messages an update would bring, newest first (the "stacked"
+        commits between the installed revision and the branch tip).
+
+        Uses the installed version's short SHA as the compare base when known
+        (our source version format is ``YYYY-MM-DD+shortsha``); otherwise falls
+        back to the most recent commits on the branch. Best-effort — [] on error.
+        Each item: ``{sha, message, date, author}``.
+        """
+        if not self.config.is_allowed(repo):
+            return []
+        current = self.state.get_version(repo, branch)
+        base_sha = current.split("+")[-1] if current and "+" in current else None
+        try:
+            head_sha, _ = self.client.get_branch_head(repo, branch)
+        except Exception:
+            head_sha = branch
+        if base_sha:
+            commits = self.client.compare_commits(repo, base_sha, head_sha or branch, limit)
+            if commits:
+                return commits
+        return self.client.list_commits(repo, branch, limit=min(limit, 10))
+
     def has_baseline(self, repo: str, branch: str = "main") -> bool:
         """True once a merge baseline (common ancestor) has been established."""
         return self.state.get_version(repo, branch) is not None
