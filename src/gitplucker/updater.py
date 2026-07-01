@@ -133,6 +133,54 @@ class Updater:
             return False
         return bool(target) and is_newer(target, current)
 
+    def has_baseline(self, repo: str, branch: str = "main") -> bool:
+        """True once a merge baseline (common ancestor) has been established."""
+        return self.state.get_version(repo, branch) is not None
+
+    def seed_baseline(self, repo: str, branch: str = "main", force: bool = False) -> dict:
+        """Establish the merge baseline (common ancestor) WITHOUT touching files.
+
+        Fetches the current upstream payload and records it as the base snapshot
+        + version marker for repo/branch. This is what makes three-way merges
+        work from first install: afterwards, any way the local files differ from
+        this baseline is correctly attributed to the user's own edits rather than
+        shown as an update change. No source file is written or deleted.
+
+        Idempotent: a no-op if a baseline already exists unless ``force``. Returns
+        a small status dict (``seeded``, ``version``, ``files`` …).
+        """
+        if not self.config.is_allowed(repo):
+            raise RepoNotAllowedError(f"repo {repo!r} is not allowlisted")
+        existing = self.state.get_version(repo, branch)
+        if existing and not force:
+            return {"seeded": False, "reason": "baseline already exists",
+                    "repo": repo, "branch": branch, "version": existing}
+
+        sub = (self.config.subscription_for(repo, branch)
+               or RepoSubscription(repo=repo, branches=[branch]))
+        workdir = Path(tempfile.mkdtemp(prefix="gp-seed-", dir=self.config.state_dir / "work"))
+        try:
+            source = self._source_for(sub)
+            fetched = source.fetch(self.client, sub, branch, workdir, lambda r, t: None)
+            if fetched.is_package:
+                # A packaged payload has no file tree to snapshot as an ancestor.
+                self.state.set_version(repo, branch, fetched.version)
+                return {"seeded": True, "repo": repo, "branch": branch,
+                        "version": fetched.version, "files": 0, "package": True}
+            files = list_files(fetched.files_root, sub.include_globs, sub.exclude_globs)
+            self.state.snapshot_base(repo, branch, fetched.files_root, files)
+            try:
+                self.state.set_known_modules(
+                    repo, branch, set(scan_imports(fetched.files_root).keys()))
+            except Exception:
+                pass
+            self.state.set_version(repo, branch, fetched.version)
+            self.events.emit(ev.CHECK_DONE, repo=repo, branch=branch, has_update=False)
+            return {"seeded": True, "repo": repo, "branch": branch,
+                    "version": fetched.version, "files": len(files)}
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
     # -- public: applying -------------------------------------------------
     def apply(self, plan: UpdatePlan, only=None) -> ApplyResult:
         """Apply a checked plan.
