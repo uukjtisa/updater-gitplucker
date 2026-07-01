@@ -1,0 +1,91 @@
+"""On-disk state: version manifest, merge base snapshots, and backups.
+
+Lives in ``install_root/.gitplucker`` by default. The *base snapshot* is the
+crucial bit for 3-way merge: after every successful apply we store a copy of
+the exact files that came from the repo, so the next update can tell what the
+user changed locally versus what upstream changed.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from pathlib import Path
+
+
+def _slug(repo: str) -> str:
+    return repo.replace("/", "__")
+
+
+class StateStore:
+    def __init__(self, state_dir: Path) -> None:
+        self.dir = Path(state_dir)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.manifest_path = self.dir / "manifest.json"
+        self._manifest = self._load()
+
+    def _load(self) -> dict:
+        if self.manifest_path.exists():
+            try:
+                return json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {"repos": {}}
+
+    def _save(self) -> None:
+        self.manifest_path.write_text(
+            json.dumps(self._manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+    def _entry(self, repo: str, branch: str) -> dict:
+        return self._manifest.setdefault("repos", {}).setdefault(repo, {}).setdefault(branch, {})
+
+    # -- version / modules ------------------------------------------------
+    def get_version(self, repo: str, branch: str) -> str | None:
+        return self._entry(repo, branch).get("version")
+
+    def set_version(self, repo: str, branch: str, version: str) -> None:
+        e = self._entry(repo, branch)
+        e["version"] = version
+        e["applied_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self._save()
+
+    def get_known_modules(self, repo: str, branch: str) -> set[str]:
+        return set(self._entry(repo, branch).get("modules", []))
+
+    def set_known_modules(self, repo: str, branch: str, modules: set[str]) -> None:
+        self._entry(repo, branch)["modules"] = sorted(modules)
+        self._save()
+
+    # -- merge base snapshot ---------------------------------------------
+    def base_dir(self, repo: str, branch: str) -> Path:
+        return self.dir / "base" / _slug(repo) / branch
+
+    def read_base_file(self, repo: str, branch: str, relpath: str) -> str | None:
+        p = self.base_dir(repo, branch) / relpath
+        if p.exists():
+            try:
+                return p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+        return None
+
+    def snapshot_base(self, repo: str, branch: str, payload_root: Path, relpaths: list[str]) -> None:
+        base = self.base_dir(repo, branch)
+        if base.exists():
+            shutil.rmtree(base, ignore_errors=True)
+        for rel in relpaths:
+            src = Path(payload_root) / rel
+            if not src.is_file():
+                continue
+            dst = base / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    # -- backups ----------------------------------------------------------
+    def new_backup_dir(self, repo: str, branch: str) -> Path:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        d = self.dir / "backups" / _slug(repo) / f"{branch}-{stamp}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d

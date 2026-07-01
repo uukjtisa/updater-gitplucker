@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# venvs
+.venv/
+venv/
+env/
+
+# gitplucker runtime state (never commit an app's update state)
+.gitplucker/
+
+# tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log

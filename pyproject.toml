@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "updater-gitplucker"
+version = "0.1.0"
+description = "Modular, pluggable GitHub updater library for Python-glued projects (release / source / python-source channels with 3-way merge and dependency auto-detection)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Niccc2007", email = "" }]
+keywords = ["updater", "github", "auto-update", "self-update", "merge", "dependencies"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: System :: Software Distribution",
+]
+dependencies = []  # zero required runtime deps: core runs on the stdlib
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/uukjtisa/updater-gitplucker"
+Repository = "https://github.com/uukjtisa/updater-gitplucker"
+Issues = "https://github.com/uukjtisa/updater-gitplucker/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gitplucker = ["py.typed"]
