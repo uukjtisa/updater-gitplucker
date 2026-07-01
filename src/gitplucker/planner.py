@@ -68,6 +68,14 @@ def build_file_plan(
 
         change_is_text = remote_is_text and is_text_file(install_path)
 
+        # Bytes differ but the decoded text is identical after newline
+        # normalization (e.g. CRLF vs LF, or a BOM) -> not a real textual change.
+        # Skip it so it never shows up as a change or gets auto-selected.
+        if change_is_text and _read_text(install_path) == _read_text(remote_path):
+            changes.append(FileChange(rel, ChangeType.UNCHANGED, remote_hash=remote_hash,
+                                      local_hash=local_hash, is_text=True))
+            continue
+
         base_text = state.read_base_file(sub.repo, branch, rel)
         locally_modified = False
         if base_text is not None:

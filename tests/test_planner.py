@@ -57,6 +57,33 @@ def test_merge_added_modified_flow(tmp_path):
     assert not warnings
 
 
+def test_line_ending_only_diff_is_not_a_change(tmp_path):
+    install = tmp_path / "install"
+    payload = tmp_path / "payload"
+    install.mkdir()
+    payload.mkdir()
+
+    repo, branch = "me/app", "main"
+    cfg = UpdaterConfig(
+        install_root=install,
+        allowed_repos=[repo],
+        subscriptions=[RepoSubscription(repo=repo, channel=Channel.PYTHON_SOURCE)],
+        state_dir=tmp_path / "state",
+    )
+    sub = cfg.subscriptions[0]
+    state = StateStore(cfg.state_dir)
+
+    # Same text, different line endings (CRLF local vs LF upstream): bytes differ
+    # (so it would hash as "modified") but there is no real textual change.
+    (install / "NOTICE").write_bytes(b"line one\r\nline two\r\n")
+    (payload / "NOTICE").write_bytes(b"line one\nline two\n")
+
+    changes, ops, _ = build_file_plan(cfg, sub, branch, payload, state)
+    by = _by_path(changes)
+    assert by["NOTICE"].change is ChangeType.UNCHANGED
+    assert not any(o.relpath == "NOTICE" for o in ops)
+
+
 def test_conflict_marks(tmp_path):
     install = tmp_path / "install"
     payload = tmp_path / "payload"
