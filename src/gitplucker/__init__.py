@@ -15,6 +15,7 @@ assistant can drop this into an app unattended).
 from __future__ import annotations
 
 from .config import ApplyStrategy, ConflictPolicy, RepoSubscription, UpdaterConfig
+from .deps import diff_requirements, parse_requirements
 from .errors import (
     ApplyError,
     ConfigError,
@@ -41,7 +42,7 @@ from .models import (
 from .triggers import BackgroundTrigger, ManualTrigger, StartupTrigger
 from .updater import Updater
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "Updater",
@@ -55,6 +56,8 @@ __all__ = [
     "FileChange",
     "DependencyChange",
     "ApplyResult",
+    "diff_requirements",
+    "parse_requirements",
     "ManualTrigger",
     "StartupTrigger",
     "BackgroundTrigger",

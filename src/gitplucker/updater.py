@@ -21,7 +21,7 @@ from pathlib import Path
 from . import events as ev
 from .backend.github_api import GitHubClient
 from .config import RepoSubscription, UpdaterConfig
-from .deps import install_requirements, resolve_dependencies, scan_imports
+from .deps import diff_requirements, install_requirements, scan_imports
 from .errors import RepoNotAllowedError
 from .events import EventEmitter
 from .fsutil import is_text_file, list_files
@@ -98,17 +98,18 @@ class Updater:
             plan._ops = ops
             plan.warnings.extend(warnings)
 
-            if sub.channel is Channel.PYTHON_SOURCE:
-                req_path = None
-                if self.config.requirements_file:
-                    req_path = self.config.install_root / self.config.requirements_file
-                deps = resolve_dependencies(
-                    fetched.files_root, req_path,
-                    known_modules=self.state.get_known_modules(sub.repo, branch),
-                )
+            if sub.channel is Channel.PYTHON_SOURCE and self.config.requirements_file:
+                # Requirements DIFF: the installed requirements.txt vs the incoming
+                # one. Added + changed are installed on apply; removed are surfaced
+                # for the user but never auto-uninstalled. This replaced the noisy
+                # import-scan as the dependency driver.
+                old_req = self.config.install_root / self.config.requirements_file
+                new_req = fetched.files_root / self.config.requirements_file
+                deps = diff_requirements(old_req, new_req)
                 plan.dependency_changes = deps
                 for d in deps:
-                    self.events.emit(ev.DEP_DETECTED, requirement=d.requirement)
+                    if d.should_install:
+                        self.events.emit(ev.DEP_DETECTED, requirement=d.requirement)
 
             has_file_work = any(op.kind for op in ops)
             plan.has_update = bool(version_bump or has_file_work or plan.dependency_changes)
@@ -230,7 +231,8 @@ class Updater:
         # On a partial apply, only install deps whose introducing file was chosen.
         if (result.success and sub.channel is Channel.PYTHON_SOURCE
                 and self.config.auto_install_deps and plan.dependency_changes):
-            deps = plan.dependency_changes
+            # Only added/changed deps are installed; removed deps are report-only.
+            deps = [d for d in plan.dependency_changes if d.should_install]
             if partial:
                 deps = [d for d in deps
                         if not d.source_file or d.source_file in plan._selected]

@@ -1,6 +1,8 @@
 from .python_deps import (
     scan_imports,
     resolve_dependencies,
+    diff_requirements,
+    parse_requirements,
     install_requirements,
     PACKAGE_ALIASES,
 )
@@ -8,6 +10,8 @@ from .python_deps import (
 __all__ = [
     "scan_imports",
     "resolve_dependencies",
+    "diff_requirements",
+    "parse_requirements",
     "install_requirements",
     "PACKAGE_ALIASES",
 ]

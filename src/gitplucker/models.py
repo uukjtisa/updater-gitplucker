@@ -45,18 +45,45 @@ class FileChange:
 
 @dataclass
 class DependencyChange:
-    """A Python dependency the incoming version needs that isn't satisfied yet."""
+    """A change to a project's Python dependencies between the installed version
+    and the incoming one.
 
-    module: str                 # top-level import name seen in the code
-    package: str                # pip package name to install
-    spec: str = ""              # optional version spec, e.g. "==2.1.0"
-    is_new: bool = True         # newly referenced vs. previous version
-    reason: str = ""            # e.g. "imported in systema/core/net.py"
-    source_file: str = ""       # payload-relative path the import was first seen in
+    The primary source is a requirements.txt DIFF (added / removed / changed):
+    ``change_kind`` says which, and ``old_spec`` / ``new_spec`` give the version
+    specifiers on each side. The legacy import-scan path (``resolve_dependencies``)
+    fills the same object with ``change_kind='added'`` and a ``module`` name.
+    """
+
+    module: str                 # top-level import name (import-scan path); "" for a diff
+    package: str                # pip package / requirement name
+    spec: str = ""              # version spec to INSTALL, e.g. ">=2.1.0" ("" = unpinned)
+    is_new: bool = True         # convenience: True for an added dependency
+    reason: str = ""            # human explanation, e.g. "0.5.0 -> 0.6.0"
+    source_file: str = ""       # payload-relative file the change came from
+    change_kind: str = "added"  # added | removed | changed | unchanged
+    old_spec: str = ""          # previous version spec ("" when added)
+    new_spec: str = ""          # incoming version spec ("" when removed)
 
     @property
     def requirement(self) -> str:
+        """The pip requirement string to install (package + install spec)."""
         return f"{self.package}{self.spec}"
+
+    @property
+    def should_install(self) -> bool:
+        """Added and changed deps get installed; removed/unchanged never do."""
+        return self.change_kind in ("added", "changed")
+
+    def describe(self) -> str:
+        """One-line, human summary for a UI row."""
+        if self.change_kind == "added":
+            return f"+ {self.package}{self.new_spec}  (new)"
+        if self.change_kind == "removed":
+            return f"- {self.package}{self.old_spec}  (removed upstream)"
+        if self.change_kind == "changed":
+            return (f"~ {self.package}: {self.old_spec or 'unpinned'} "
+                    f"-> {self.new_spec or 'unpinned'}")
+        return f"  {self.package}{self.new_spec}"
 
 
 @dataclass
@@ -93,7 +120,30 @@ class UpdatePlan:
 
     @property
     def new_dependencies(self) -> list[DependencyChange]:
-        return [d for d in self.dependency_changes if d.is_new]
+        """Newly added dependencies (change_kind == 'added')."""
+        return [d for d in self.dependency_changes if d.change_kind == "added"]
+
+    @property
+    def changed_dependencies(self) -> list[DependencyChange]:
+        return [d for d in self.dependency_changes if d.change_kind == "changed"]
+
+    @property
+    def removed_dependencies(self) -> list[DependencyChange]:
+        """Dependencies dropped upstream — reported only, never auto-uninstalled."""
+        return [d for d in self.dependency_changes if d.change_kind == "removed"]
+
+    @property
+    def deps_to_install(self) -> list[DependencyChange]:
+        """The added + changed deps an apply would pip-install."""
+        return [d for d in self.dependency_changes if d.should_install]
+
+    def dependency_summary(self) -> str:
+        """Compact one-liner, e.g. 'New: 2  -  Changed: 1  -  Removed: 0', or ''."""
+        n, c, r = (len(self.new_dependencies), len(self.changed_dependencies),
+                   len(self.removed_dependencies))
+        if not (n or c or r):
+            return ""
+        return f"New: {n}  -  Changed: {c}  -  Removed: {r}"
 
     @property
     def changed_paths(self) -> list[str]:

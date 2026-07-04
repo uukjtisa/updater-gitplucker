@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -154,12 +155,131 @@ def _parse_requirements(path: Path) -> dict[str, str]:
     return specs
 
 
+# ── requirements.txt diff engine (the primary dependency source) ─────────────
+_REQ_NAME_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _split_requirement(line: str) -> tuple[str | None, str]:
+    """Split one requirements line into ``(canonical_name, version_spec)``.
+
+    Strips inline comments, environment markers (``; python_version < '3.11'``)
+    and extras (``[security]``). Returns ``(None, "")`` for blanks, comments,
+    option lines (``-r``, ``-e``, ``--hash``) and URL / VCS / local-path
+    requirements — anything that isn't a simple ``name<spec>`` we deliberately
+    leave to pip rather than trying to diff. ``version_spec`` is the raw suffix,
+    e.g. ``">=2.1.0"`` or ``"==1.0,<2"`` or ``""`` when unpinned.
+    """
+    raw = (line or "").strip()
+    if not raw or raw.startswith("#") or raw.startswith("-"):
+        return None, ""
+    raw = raw.split(" #", 1)[0].split("\t#", 1)[0].strip()   # inline comment
+    raw = raw.split(";", 1)[0].strip()                        # env marker
+    if not raw or "://" in raw or raw.startswith((".", "/", "~")):
+        return None, ""
+    m = _REQ_NAME_RE.match(raw)
+    if not m:
+        return None, ""
+    name = m.group(1)
+    rest = raw[len(name):].lstrip()
+    if rest.startswith("["):                                  # extras: requests[security]
+        close = rest.find("]")
+        rest = rest[close + 1:] if close != -1 else rest
+    return name, rest.strip()
+
+
+def parse_requirements(path: Path | None) -> dict[str, dict]:
+    """Parse a requirements file into ``{name_lower: {name, spec, raw}}``.
+
+    Only simple named requirements are captured (see :func:`_split_requirement`);
+    the last occurrence of a duplicated name wins. Missing file -> ``{}``. Never
+    raises.
+    """
+    out: dict[str, dict] = {}
+    if not path:
+        return out
+    path = Path(path)
+    if not path.exists():
+        return out
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        name, spec = _split_requirement(line)
+        if not name:
+            continue
+        out[name.lower()] = {"name": name, "spec": spec, "raw": line.strip()}
+    return out
+
+
+def _norm_spec(spec: str) -> str:
+    """Whitespace-insensitive spec key so ``>= 2.0`` == ``>=2.0``."""
+    return "".join((spec or "").split())
+
+
+def diff_requirements(
+    old_path: Path | None,
+    new_path: Path | None,
+    *,
+    include_unchanged: bool = False,
+) -> list[DependencyChange]:
+    """Diff two requirements files by package name -> list[DependencyChange].
+
+    - in NEW but not OLD             -> ``added``   (installed on apply)
+    - in OLD but not NEW             -> ``removed`` (report only; never uninstalled)
+    - in both, version spec differs  -> ``changed`` (new spec installed on apply)
+    - in both, identical             -> ``unchanged`` (only if ``include_unchanged``)
+
+    Package names are compared case-insensitively; comments, markers, extras and
+    option/URL lines are ignored. Deterministic (sorted) and never raises — this
+    is the engine that replaced import-scanning as the auto-install driver.
+    """
+    old = parse_requirements(old_path)
+    new = parse_requirements(new_path)
+    req_rel = Path(new_path).name if new_path else "requirements.txt"
+    changes: list[DependencyChange] = []
+
+    for key in sorted(new):
+        entry = new[key]
+        name, spec = entry["name"], entry["spec"]
+        if key not in old:
+            changes.append(DependencyChange(
+                module="", package=name, spec=spec, is_new=True,
+                change_kind="added", old_spec="", new_spec=spec,
+                reason="added in requirements", source_file=req_rel))
+        elif _norm_spec(old[key]["spec"]) != _norm_spec(spec):
+            changes.append(DependencyChange(
+                module="", package=name, spec=spec, is_new=False,
+                change_kind="changed", old_spec=old[key]["spec"], new_spec=spec,
+                reason=f"{old[key]['spec'] or 'unpinned'} -> {spec or 'unpinned'}",
+                source_file=req_rel))
+        elif include_unchanged:
+            changes.append(DependencyChange(
+                module="", package=name, spec=spec, is_new=False,
+                change_kind="unchanged", old_spec=old[key]["spec"], new_spec=spec,
+                reason="unchanged", source_file=req_rel))
+
+    for key in sorted(old):
+        if key not in new:
+            entry = old[key]
+            changes.append(DependencyChange(
+                module="", package=entry["name"], spec="", is_new=False,
+                change_kind="removed", old_spec=entry["spec"], new_spec="",
+                reason="removed from requirements", source_file=req_rel))
+    return changes
+
+
 def resolve_dependencies(
     payload_root: Path,
     requirements_path: Path | None = None,
     known_modules: set[str] | None = None,
 ) -> list[DependencyChange]:
-    """Compute the dependencies the incoming payload needs but the env lacks.
+    """LEGACY import-scan path (kept for back-compat / explicit opt-in).
+
+    The updater no longer drives auto-installs from this — it uses
+    :func:`diff_requirements` on the old vs new requirements.txt instead. This
+    still scans imports and surfaces modules the environment can't satisfy, for
+    callers that specifically want import-based detection.
 
     ``known_modules`` is the set seen in the *previous* applied version; anything
     outside it is flagged ``is_new`` (a genuinely newly-added module).
